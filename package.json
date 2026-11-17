@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "test": "npm run build && node --test"
   },
   "dependencies": {
     "chalk": "^5",

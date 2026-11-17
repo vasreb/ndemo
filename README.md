@@ -21,7 +21,7 @@ You: "Create a demo showing the new dashboard filters"
 
 - **Node.js 20+**
 - **ffmpeg** with libx264 and aac encoders (ffprobe ships with it)
-- **OPENAI_API_KEY** environment variable (for TTS narration)
+- **TTS backend**: `OPENAI_API_KEY` for the default OpenAI provider, a local Kokoro server, or Piper (see below)
 - **Claude Code** with skills support
 
 ## Installation
@@ -157,6 +157,7 @@ The skill file teaches Claude Code to run these commands automatically, but you 
 | `ndemo render <playbook>` | Full pipeline: TTS, headless replay, merge to mp4 |
 | `ndemo render <playbook> --output path.mp4` | Render to a specific output path |
 | `ndemo doctor` | Check that all dependencies are installed |
+| `ndemo doctor --playbook <playbook>` | Check dependencies for the playbook's TTS provider |
 
 ## Playbook format
 
@@ -203,6 +204,81 @@ segments:
       - type: wait
         duration: 2000
 ```
+
+### Local TTS providers
+
+OpenAI remains the default. Local providers do not require `OPENAI_API_KEY`
+and work with both `play --audio` and `render`. Audio is cached by narration
+and provider settings; changing providers, voices, speed, models, speakers,
+or the Kokoro endpoint regenerates it.
+
+#### Kokoro-82M
+
+Run an OpenAI-compatible [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)
+server (CPU example; pin an image release for reproducible deployments):
+
+```bash
+docker run --rm -p 127.0.0.1:8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest
+```
+
+Add to your playbook:
+
+```yaml
+tts:
+  provider: kokoro
+  baseUrl: http://localhost:8880/v1  # optional; this is the default
+  voice: af_heart                    # default; Kokoro voice names, not OpenAI voices
+  speed: 1.0                        # 0.25–4.0
+```
+
+The adapter requests model `kokoro` and MP3 audio from `/v1/audio/speech`.
+If your server requires authentication, set `KOKORO_API_KEY`. The OpenAI
+API key is never sent to this server. Narration is sent to the configured
+endpoint, so use a trusted server.
+`doctor` checks Kokoro-FastAPI's `/audio/voices` endpoint; a server that
+only implements the speech endpoint may synthesize successfully but fail this check.
+
+#### Piper
+
+Install [Piper](https://github.com/OHF-Voice/piper1-gpl) in your Python
+environment and download a voice (review its model license):
+
+```bash
+python -m pip install piper-tts
+python -m piper.download_voices en_US-lessac-medium
+```
+
+Ensure the environment's `piper` command is on `PATH`, then configure:
+
+```yaml
+tts:
+  provider: piper
+  model: /absolute/path/to/en_US-lessac-medium.onnx
+  speaker: 0                        # optional, for multi-speaker models
+  speed: 1.0                        # positive; 2.0 speaks twice as fast
+  executable: piper                 # optional, path to the executable (not a shell command)
+```
+
+Keep the matching `.onnx.json` file next to the model. Relative model and
+executable paths are resolved from the working directory where you run
+ndemo, not from the playbook directory. Use absolute paths for portability.
+Piper receives narration via stdin and generates WAV locally; ffmpeg with
+the `libmp3lame` encoder converts it to the MP3 format used by ndemo.
+Speed is mapped to Piper's inverse `length_scale`. No server or API key
+is needed, and ndemo does not download models automatically.
+
+Check either setup with:
+
+```bash
+ndemo doctor --playbook /absolute/path/to/demo.yaml
+```
+
+`doctor` without a playbook still checks the default OpenAI setup.
+The existing `elevenlabs` schema option remains unimplemented.
+If you replace model files in place, remove the playbook's generated
+`audio/` cache to regenerate narration.
+Existing OpenAI audio is regenerated once on first use with the new
+provider-aware cache keys.
 
 ### Action types
 
@@ -266,6 +342,17 @@ Claude Code (the agent)
 ```
 
 The toolkit deliberately avoids building its own agent loop, conversation manager, retry logic, or element discovery. Claude Code already does all of that — the skill file just teaches it the workflow.
+
+## Development
+
+```bash
+npm ci
+npm test
+```
+
+Tests use Node's built-in test runner, a mock local speech server, and
+substitute Piper/ffmpeg/ffprobe processes. They do not require API keys,
+downloaded TTS models, installed audio tools, or a running browser.
 
 ## License
 

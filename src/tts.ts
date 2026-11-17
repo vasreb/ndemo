@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execa } from "execa";
-import OpenAI from "openai";
+import { synthesize, type TtsConfig } from "./tts-providers.js";
 import type { Playbook, Segment } from "./schema.js";
 
 interface TtsResult {
@@ -10,10 +10,14 @@ interface TtsResult {
   durationMs: number;
 }
 
-function ttsHash(narration: string, voice: string, speed: number): string {
+function ttsHash(narration: string, config: TtsConfig): string {
+  // Piper resolves model paths from cwd; the cache must identify the same file.
+  const cacheConfig = config.provider === "piper"
+    ? { ...config, model: path.resolve(config.model) }
+    : config;
   return crypto
     .createHash("sha256")
-    .update(narration + voice + speed)
+    .update(JSON.stringify([narration, cacheConfig]))
     .digest("hex")
     .slice(0, 8);
 }
@@ -24,9 +28,9 @@ function ttsHash(narration: string, voice: string, speed: number): string {
  */
 function findAudioFile(audioDir: string, segmentId: string): string | null {
   if (!fs.existsSync(audioDir)) return null;
-  const prefix = `${segmentId}-`;
+  const pattern = new RegExp(`^${segmentId}-[a-f0-9]{8}\\.mp3$`);
   const files = fs.readdirSync(audioDir);
-  const match = files.find(f => f.startsWith(prefix) && f.endsWith(".mp3"));
+  const match = files.find(f => pattern.test(f));
   return match ? path.join(audioDir, match) : null;
 }
 
@@ -36,16 +40,16 @@ function findAudioFile(audioDir: string, segmentId: string): string | null {
 function cleanStaleAudio(audioDir: string, segmentId: string, currentHash: string): void {
   if (!fs.existsSync(audioDir)) return;
   const currentName = `${segmentId}-${currentHash}.mp3`;
-  const prefix = `${segmentId}-`;
+  const pattern = new RegExp(`^${segmentId}-[a-f0-9]{8}\\.mp3$`);
   for (const file of fs.readdirSync(audioDir)) {
-    if (file.startsWith(prefix) && file.endsWith(".mp3") && file !== currentName) {
+    if (pattern.test(file) && file !== currentName) {
       fs.unlinkSync(path.join(audioDir, file));
     }
   }
 }
 
 /**
- * Ensure TTS audio exists for a segment, regenerating if narration/voice/speed changed.
+ * Ensure TTS audio exists, regenerating if narration or provider settings changed.
  * Deletes stale audio files automatically.
  */
 async function ensureAudio(
@@ -56,11 +60,8 @@ async function ensureAudio(
   const audioDir = path.join(outputDir, "audio");
   fs.mkdirSync(audioDir, { recursive: true });
 
-  const hash = ttsHash(segment.narration!, playbook.tts.voice, playbook.tts.speed);
+  const hash = ttsHash(segment.narration!, playbook.tts);
   const audioPath = path.join(audioDir, `${segment.id}-${hash}.mp3`);
-
-  // Clean up stale files for this segment
-  cleanStaleAudio(audioDir, segment.id, hash);
 
   // If current file exists, just probe and return
   if (fs.existsSync(audioPath)) {
@@ -68,25 +69,18 @@ async function ensureAudio(
     return { audioPath, durationMs };
   }
 
-  // Generate new audio
-  if (playbook.tts.provider === "openai") {
-    const openai = new OpenAI();
-    const response = await openai.audio.speech.create({
-      model: "tts-1-hd",
-      voice: playbook.tts.voice as any,
-      speed: playbook.tts.speed,
-      input: segment.narration!,
-      response_format: "mp3",
-    });
-
-    const arrayBuffer = await response.arrayBuffer();
-    fs.writeFileSync(audioPath, new Uint8Array(arrayBuffer));
-  } else {
-    throw new Error(`TTS provider "${playbook.tts.provider}" not yet implemented`);
+  // Publish only complete, probeable audio; a failed generation keeps the old cache.
+  const tempDir = fs.mkdtempSync(path.join(audioDir, ".tts-"));
+  try {
+    const tempPath = path.join(tempDir, "speech.mp3");
+    await synthesize(segment.narration!, playbook.tts, tempPath);
+    const durationMs = await probeDuration(tempPath);
+    fs.renameSync(tempPath, audioPath);
+    cleanStaleAudio(audioDir, segment.id, hash);
+    return { audioPath, durationMs };
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
   }
-
-  const durationMs = await probeDuration(audioPath);
-  return { audioPath, durationMs };
 }
 
 async function probeDuration(audioPath: string): Promise<number> {

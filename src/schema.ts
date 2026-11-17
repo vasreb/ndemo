@@ -113,6 +113,34 @@ const TitleCardSchema = z.object({
 
 // ─── Playbook ────────────────────────────────────────
 
+const TtsSchema = z.discriminatedUnion("provider", [
+  z.object({
+    provider: z.literal("openai"),
+    voice: z.string().min(1).default("alloy"),
+    speed: z.number().positive().default(1),
+  }),
+  z.object({
+    provider: z.literal("elevenlabs"),
+    voice: z.string().min(1).default("alloy"),
+    speed: z.number().positive().default(1),
+  }),
+  z.object({
+    provider: z.literal("kokoro"),
+    voice: z.string().min(1).default("af_heart"),
+    speed: z.number().min(0.25).max(4).default(1),
+    baseUrl: z.string().url().refine(url => /^https?:\/\//i.test(url), {
+      message: "Kokoro baseUrl must use HTTP or HTTPS",
+    }).default("http://localhost:8880/v1"),
+  }),
+  z.object({
+    provider: z.literal("piper"),
+    model: z.string().min(1),
+    speaker: z.number().int().nonnegative().default(0),
+    speed: z.number().positive().default(1),
+    executable: z.string().min(1).default("piper"),
+  }),
+]);
+
 const PlaybookSchema = z.object({
   titleCard: TitleCardSchema.optional(),
   app: z.object({
@@ -126,11 +154,8 @@ const PlaybookSchema = z.object({
     colorScheme: z.enum(["light", "dark"]).default("light"),
     setup: z.array(SetupStepSchema).optional(),
   }),
-  tts: z.object({
-    provider: z.enum(["openai", "elevenlabs"]).default("openai"),
-    voice: z.string().default("alloy"),
-    speed: z.number().positive().default(1.0),
-  }).default({}),
+  tts: z.object({ provider: z.string().default("openai") })
+    .passthrough().default({}).pipe(TtsSchema),
   recording: z.object({
     outputDir: z.string().default("."),
     fps: z.number().int().positive().default(30),
@@ -149,7 +174,7 @@ type SetupStep = z.infer<typeof SetupStepSchema>;
 export {
   PlaybookSchema, SegmentSchema, ActionSchema,
   TargetSchema, DoneConditionSchema, ConditionSchema,
-  SetupStepSchema, TitleCardSchema,
+  SetupStepSchema, TitleCardSchema, TtsSchema,
 };
 export type {
   Playbook, Segment, Action, Target, DoneCondition,

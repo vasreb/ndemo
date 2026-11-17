@@ -11,6 +11,7 @@ import { loadPlaybook } from "./playbook-io.js";
 import { execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { execa } from "execa";
 
 const program = new Command();
 
@@ -163,8 +164,16 @@ program
 program
   .command("doctor")
   .description("Check dependencies")
-  .action(async () => {
+  .option("--playbook <path>", "Check TTS dependencies for a playbook (default: OpenAI)")
+  .action(async (options: { playbook?: string }) => {
     let allOk = true;
+    let tts;
+    try {
+      tts = options.playbook ? loadPlaybook(options.playbook).tts : { provider: "openai" as const };
+    } catch (err) {
+      console.error(`Error: ${err}`);
+      process.exit(1);
+    }
 
     const nodeVersion = process.version;
     const nodeMajor = parseInt(nodeVersion.slice(1));
@@ -206,17 +215,50 @@ program
       allOk = false;
     }
 
-    if (process.env.OPENAI_API_KEY) {
+    if (tts.provider === "kokoro") {
+      try {
+        const response = await fetch(`${tts.baseUrl.replace(/\/$/, "")}/audio/voices`, {
+          signal: AbortSignal.timeout(5000),
+          headers: process.env.KOKORO_API_KEY ? { Authorization: `Bearer ${process.env.KOKORO_API_KEY}` } : {},
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        console.log(`  ✓ Kokoro server reachable (${tts.baseUrl})`);
+      } catch (err) {
+        console.log(`  ✗ Kokoro voice-list check failed (/audio/voices): ${err}`);
+        allOk = false;
+      }
+    } else if (tts.provider === "piper") {
+      try {
+        await execa(tts.executable, ["--help"], { timeout: 5000 });
+        console.log(`  ✓ Piper executable (${tts.executable})`);
+      } catch (err) {
+        console.log(`  ✗ Piper executable check failed (${tts.executable}): ${err}`);
+        allOk = false;
+      }
+      for (const file of [tts.model, `${tts.model}.json`]) {
+        if (fs.existsSync(file)) {
+          console.log(`  ✓ ${file}`);
+        } else {
+          console.log(`  ✗ Piper model/config not found: ${file}`);
+          allOk = false;
+        }
+      }
+      try {
+        const { stdout } = await execa("ffmpeg", ["-encoders"]);
+        if (!stdout.includes("libmp3lame")) throw new Error("missing encoder");
+        console.log("  ✓ ffmpeg libmp3lame encoder");
+      } catch {
+        console.log("  ✗ Piper requires ffmpeg with libmp3lame");
+        allOk = false;
+      }
+    } else if (tts.provider === "elevenlabs") {
+      console.log("  ✗ elevenlabs TTS is not yet implemented");
+      allOk = false;
+    } else if (process.env.OPENAI_API_KEY) {
       console.log("  ✓ OPENAI_API_KEY is set");
     } else {
-      console.log("  ✗ OPENAI_API_KEY not set (required for TTS)");
+      console.log("  ✗ OPENAI_API_KEY not set (required for OpenAI TTS)");
       allOk = false;
-    }
-
-    if (process.env.ELEVENLABS_API_KEY) {
-      console.log("  ✓ ELEVENLABS_API_KEY is set");
-    } else {
-      console.log("  ✗ ELEVENLABS_API_KEY not set (optional, needed for elevenlabs TTS)");
     }
 
     process.exit(allOk ? 0 : 1);

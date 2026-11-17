@@ -121,7 +121,7 @@ titleCard:                               # optional title card (shown as first f
   duration: 3000                         # milliseconds to hold (default 3000)
 
 tts:                                   # optional TTS configuration
-  provider: openai                     # "openai" (default) or "elevenlabs"
+  provider: openai                     # "openai" (default), "kokoro", or "piper"
   voice: alloy                         # TTS voice name (default "alloy")
   speed: 1.0                           # speech speed multiplier (default 1.0)
 
@@ -143,6 +143,23 @@ segments:
     intent: "click the edit button"
     actions: []
 ```
+
+**Local narration:** Use `provider: kokoro` for a running Kokoro-82M
+OpenAI-compatible server (`baseUrl: http://localhost:8880/v1`,
+`voice: af_heart`, `speed: 1.0`). Use `provider: piper` with an absolute
+`model: /path/to/voice.onnx`, optional `speaker: 0`, `speed: 1.0`, and
+optional `executable: /path/to/piper`. Piper needs the adjacent
+`.onnx.json` file and ffmpeg with `libmp3lame`; model/executable paths
+are relative to the command's working directory, not the playbook.
+Neither local provider needs `OPENAI_API_KEY`. Kokoro can use
+`KOKORO_API_KEY` if its server requires authentication. Do not silently
+switch providers or send narration to a remote endpoint; use the user's
+chosen backend. See README.md for installation commands.
+
+Check the chosen backend with
+`${CLAUDE_SKILL_DIR}/ndemo doctor --playbook /absolute/path/to/demo.yaml`.
+Without `--playbook`, doctor checks the default OpenAI setup.
+The legacy `elevenlabs` option is not yet implemented.
 
 **Segment timing** controls when actions run relative to narration:
 - `after` (default) — narration plays first, then actions execute
@@ -248,7 +265,7 @@ ${CLAUDE_SKILL_DIR}/ndemo play /absolute/path/to/demo/my-demo/my-demo.yaml
 Watch the full sequence in the browser. Ask the user if it
 looks right.
 
-To review with TTS narration (requires OPENAI_API_KEY and ffplay):
+To review with TTS narration (requires the configured TTS backend and ffplay):
 
 ```bash
 ${CLAUDE_SKILL_DIR}/ndemo play /absolute/path/to/demo/my-demo/my-demo.yaml --audio
